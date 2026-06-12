@@ -5,7 +5,21 @@ const config: Config = {
   theme: {
     extend: {
       colors: {
-        brand: { DEFAULT: '#3ecf8e', dark: '#249361' }, // Supabase green
+        bg: 'var(--bg)',
+        panel: 'var(--panel)',
+        'panel-2': 'var(--panel-2)',
+        line: 'var(--line)',
+        'line-strong': 'var(--line-strong)',
+        ink: 'var(--ink)',
+        muted: 'var(--muted)',
+        faint: 'var(--faint)',
+        brand: { DEFAULT: 'var(--brand)', dim: 'var(--brand-dim)' },
+        warn: 'var(--warn)',
+        danger: 'var(--danger)',
+      },
+      fontFamily: {
+        sans: ['Fira Sans', 'system-ui', 'sans-serif'],
+        mono: ['Fira Code', 'ui-monospace', 'monospace'],
       },
     },
   },

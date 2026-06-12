@@ -86,6 +86,11 @@ function cleanMarkdown(text: string): string {
     .replace(/<[^>]+>/g, '')                  // strip JSX tags
     .replace(/```[\s\S]*?```/g, '')           // remove code blocks
     .replace(/`[^`]*`/g, '')                  // remove inline code
+    // Markdown tables: drop |---| separator rows, then flatten data rows to text.
+    .replace(/^\s*\|?[\s:|]*-{2,}[-\s:|]*\|?\s*$/gm, '')
+    .replace(/^\s*\|(.+)\|\s*$/gm, (_m, row: string) =>
+      row.split('|').map((cell) => cell.trim()).filter(Boolean).join(' — ')
+    )
     .replace(/#{1,6}\s/g, '')                 // remove heading markers
     .replace(/\[([^\]]+)\]\([^)]+\)/g, '$1')  // links → text only
     .replace(/^\s*[-*>]\s/gm, '')             // remove bullets/blockquotes

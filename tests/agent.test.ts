@@ -1,13 +1,11 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
 /**
- * Agent unit tests. Anthropic, the MCP client, and OpenAI are all mocked so the
- * test is deterministic and offline. We verify: (1) the agent wires Claude's
- * chosen tool through to the MCP call, and (2) the single retry fires when the
- * first MCP call fails.
+ * Agent unit tests. The chat client (OpenRouter), the MCP client, and the
+ * embeddings client are all mocked so the test is deterministic and offline.
+ * We verify: (1) the agent wires the model's chosen tool through to the MCP
+ * call, and (2) the single retry fires when the first MCP call fails.
  */
-
-process.env.ANTHROPIC_API_KEY = 'test-key';
 
 const { mockCreate, mockCallMCP, mockEmbed } = vi.hoisted(() => ({
   mockCreate: vi.fn(),
@@ -15,10 +13,10 @@ const { mockCreate, mockCallMCP, mockEmbed } = vi.hoisted(() => ({
   mockEmbed: vi.fn(),
 }));
 
-vi.mock('@anthropic-ai/sdk', () => ({
-  default: class MockAnthropic {
-    messages = { create: mockCreate };
-  },
+vi.mock('../src/lib/llm', () => ({
+  llm: { chat: { completions: { create: mockCreate } } },
+  CHAT_MODEL: 'test-model',
+  assertChatConfigured: () => {},
 }));
 
 vi.mock('../src/lib/mcp-client', () => ({ callMCP: mockCallMCP }));
@@ -27,29 +25,41 @@ vi.mock('../src/lib/openai', () => ({
   embedBatch: vi.fn(),
 }));
 
-import { runAgent } from '../src/agent';
+import { runAgent, resetSchemaCache } from '../src/agent';
 
+// OpenAI-style chat-completion response builders.
 const toolUseMsg = (name: string, input: Record<string, unknown>) => ({
-  content: [{ type: 'tool_use', id: 'tu_1', name, input }],
+  choices: [
+    {
+      message: {
+        role: 'assistant',
+        content: null,
+        tool_calls: [{ id: 'tc_1', type: 'function', function: { name, arguments: JSON.stringify(input) } }],
+      },
+    },
+  ],
 });
-const textMsg = (text: string) => ({ content: [{ type: 'text', text }] });
+const textMsg = (text: string) => ({
+  choices: [{ message: { role: 'assistant', content: text } }],
+});
 
 beforeEach(() => {
   mockCreate.mockReset();
   mockCallMCP.mockReset();
   mockEmbed.mockReset();
   mockEmbed.mockResolvedValue(new Array(1536).fill(0));
-  // Default doc-context prefetch call succeeds with no docs.
   mockCallMCP.mockResolvedValue({ tool: 'semantic_search', success: true, data: [] });
+  // runAgent fetches the schema (list_tables) once and memoizes it — clear between tests.
+  resetSchemaCache();
 });
 
 describe('runAgent', () => {
-  it('routes Claude\'s chosen tool to the MCP client and returns the final answer', async () => {
+  it("routes the model's chosen tool to the MCP client and returns the final answer", async () => {
     mockCreate
       .mockResolvedValueOnce(toolUseMsg('get_schema', { table_name: 'users' }))
       .mockResolvedValueOnce(textMsg('The users table has id, email, full_name.'));
     mockCallMCP
-      .mockResolvedValueOnce({ success: true, data: [] }) // RAG prefetch
+      .mockResolvedValueOnce({ success: true, data: [] }) // schema fetch (list_tables)
       .mockResolvedValueOnce({ success: true, data: [{ column_name: 'email' }] }); // get_schema
 
     const result = await runAgent('What columns does the users table have?');
@@ -66,7 +76,7 @@ describe('runAgent', () => {
       .mockResolvedValueOnce(toolUseMsg('run_sql', { query: 'SELECT * FROM orders;' }))
       .mockResolvedValueOnce(textMsg('Here are the orders.'));
     mockCallMCP
-      .mockResolvedValueOnce({ success: true, data: [] }) // RAG prefetch
+      .mockResolvedValueOnce({ success: true, data: [] }) // schema fetch (list_tables)
       .mockResolvedValueOnce({ success: false, error: 'syntax error' }) // first attempt
       .mockResolvedValueOnce({ success: true, data: [{ id: 1 }] }); // retry succeeds
 
@@ -79,7 +89,7 @@ describe('runAgent', () => {
     expect((runSqlCalls[1][1] as { query: string }).query).toBe('SELECT * FROM orders');
   });
 
-  it('refuses (no tool) when Claude returns only text', async () => {
+  it('refuses (no tool) when the model returns only text', async () => {
     mockCreate.mockResolvedValueOnce(
       textMsg('I cannot do that — this assistant is read-only.')
     );

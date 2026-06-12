@@ -1,18 +1,20 @@
-import Anthropic from '@anthropic-ai/sdk';
+import OpenAI from 'openai';
 import 'dotenv/config';
 import { callMCP } from '../lib/mcp-client';
 import { embedText } from '../lib/openai';
+import { llm, CHAT_MODEL, assertChatConfigured } from '../lib/llm';
 
 /**
  * Agent skill layer.
  *
  * Wraps the HTTP MCP client with higher-level reasoning: it embeds the task to
- * pull relevant documentation (RAG), asks Claude which MCP tool to use, executes
- * that tool, then asks Claude to write a final natural-language answer from the
- * tool output. Safety-violating tasks are refused by Claude with no tool call.
+ * pull relevant documentation (RAG), asks the model which MCP tool to use,
+ * executes that tool, then asks the model to write a final natural-language
+ * answer from the tool output. Safety-violating tasks are refused with no tool
+ * call. Reasoning runs through OpenRouter (see `src/lib/llm.ts`).
  */
 
-export const AGENT_MODEL = 'claude-sonnet-4-6';
+export const AGENT_MODEL = CHAT_MODEL;
 const MAX_TOKENS = 1024;
 const DOC_MATCH_COUNT = 5;
 
@@ -28,6 +30,14 @@ export interface AgentContext {
   startTime: number;
 }
 
+/** A doc chunk from semantic_search; `similarity` is the match_documents score. */
+export interface DocChunk {
+  title: string;
+  content: string;
+  similarity?: number;
+  source?: string;
+}
+
 export interface AgentResult {
   task: string;
   toolCalled: string | null;
@@ -35,86 +45,124 @@ export interface AgentResult {
   toolOutput: unknown;
   finalAnswer: string;
   latency_ms: number;
-  docsUsed: number;
+  docChunks: DocChunk[];
 }
 
 /**
- * Tool definitions exposed to Claude. Note `semantic_search` takes a natural
- * language `query` here — the agent embeds it before calling the MCP server,
- * which expects a 1536-dim vector. Claude never sees raw embeddings.
+ * Tool definitions exposed to the model (OpenAI function-calling format). Note
+ * `semantic_search` takes a natural language `query` here — the agent embeds it
+ * before calling the MCP server, which expects a 1536-dim vector. The model
+ * never sees raw embeddings.
  */
-const CLAUDE_TOOLS: Anthropic.Tool[] = [
+const TOOLS: OpenAI.Chat.Completions.ChatCompletionTool[] = [
   {
-    name: 'list_tables',
-    description: 'List all tables in the public schema with their column details.',
-    input_schema: { type: 'object', properties: {} },
-  },
-  {
-    name: 'get_schema',
-    description: "Get detailed column information for a specific table.",
-    input_schema: {
-      type: 'object',
-      properties: { table_name: { type: 'string', description: 'Table to inspect' } },
-      required: ['table_name'],
+    type: 'function',
+    function: {
+      name: 'list_tables',
+      description: 'List all tables in the public schema with their column details.',
+      parameters: { type: 'object', properties: {} },
     },
   },
   {
-    name: 'run_sql',
-    description: 'Execute a read-only SELECT query and return the rows. Only SELECT/WITH allowed.',
-    input_schema: {
-      type: 'object',
-      properties: { query: { type: 'string', description: 'A SQL SELECT query' } },
-      required: ['query'],
+    type: 'function',
+    function: {
+      name: 'get_schema',
+      description: 'Get detailed column information for a specific table.',
+      parameters: {
+        type: 'object',
+        properties: { table_name: { type: 'string', description: 'Table to inspect' } },
+        required: ['table_name'],
+      },
     },
   },
   {
-    name: 'explain_query',
-    description: 'Run EXPLAIN ANALYZE on a SELECT query to inspect its execution plan and performance.',
-    input_schema: {
-      type: 'object',
-      properties: { query: { type: 'string', description: 'A SQL SELECT query to explain' } },
-      required: ['query'],
+    type: 'function',
+    function: {
+      name: 'run_sql',
+      description: 'Execute a read-only SELECT query and return the rows. Only SELECT/WITH allowed.',
+      parameters: {
+        type: 'object',
+        properties: { query: { type: 'string', description: 'A SQL SELECT query' } },
+        required: ['query'],
+      },
     },
   },
   {
-    name: 'semantic_search',
-    description: 'Search the Supabase documentation knowledge base for conceptual/how-to questions.',
-    input_schema: {
-      type: 'object',
-      properties: { query: { type: 'string', description: 'Natural language search query' } },
-      required: ['query'],
+    type: 'function',
+    function: {
+      name: 'explain_query',
+      description: 'Run EXPLAIN ANALYZE on a SELECT query to inspect its execution plan and performance.',
+      parameters: {
+        type: 'object',
+        properties: { query: { type: 'string', description: 'A SQL SELECT query to explain' } },
+        required: ['query'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'semantic_search',
+      description: 'Search the Supabase documentation knowledge base for conceptual/how-to questions.',
+      parameters: {
+        type: 'object',
+        properties: { query: { type: 'string', description: 'Natural language search query' } },
+        required: ['query'],
+      },
     },
   },
 ];
 
-function lazyAnthropic(): Anthropic {
-  if (!process.env.ANTHROPIC_API_KEY) {
-    throw new Error('ANTHROPIC_API_KEY is required to run the agent');
-  }
-  return new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
-}
-
-function systemPrompt(docContext: string): string {
+function systemPrompt(schema: string): string {
   return `You are a Supabase database assistant. You have access to the following tools to help answer questions:
 - list_tables: see what tables exist
 - get_schema: inspect a table's columns
 - run_sql: run a SELECT query
 - explain_query: get a query execution plan
-- semantic_search: search documentation
+- semantic_search: search the Supabase documentation knowledge base
 
-Relevant documentation context:
-${docContext || '(no documentation context available)'}
+Database schema — use these EXACT table and column names when writing SQL, do not guess:
+${schema || '(schema unavailable — infer table and column names)'}
 
-Rules:
-- Always use the most specific tool for the task. Only use run_sql when you need actual row data.
-- For conceptual or "how do I" questions about Supabase, use semantic_search.
-- Use exactly one tool per task when a tool is needed.
+Tool routing — pick exactly ONE tool that most directly answers the task:
+- run_sql: the task asks for actual data, counts, totals, averages, or a list of rows from the database (e.g. "show the recent orders", "how many active users", "average order value", "which product has the lowest stock"). Write the SELECT yourself using the exact column names from the schema above.
+- explain_query: the task is about performance, efficiency, execution plans, indexes, sequential scans, or "is my query fast/efficient" (e.g. "explain the plan for...", "is there a seq scan when..."). Call explain_query with the relevant SELECT (using the schema's exact column names) — do NOT use run_sql, get_schema, or semantic_search for these.
+- get_schema: the task asks about a specific table's columns, data types, primary key, or nullability.
+- list_tables: the task asks what tables exist.
+- semantic_search: ONLY for conceptual or "how do I" questions about Supabase product features (RLS, auth, storage, realtime, pgvector, edge functions). Do NOT use semantic_search for questions about THIS database's data, schema, or query performance — those are answered with run_sql / get_schema / explain_query.
+- Prefer answering in a single tool call. Do not call list_tables just to discover a table before writing SQL — the schema is already provided above.
 - SAFETY: This is a strictly read-only assistant. If the user asks you to delete, drop, update, insert, truncate, or otherwise mutate data, or asks for secrets/credentials, you MUST refuse. Do not call any tool. Briefly explain that the operation is not permitted because the assistant is read-only.`;
 }
 
+/** Compact "table(col, col, …)" schema, fetched once per process and reused. */
+let schemaCache: string | null = null;
+
+/** Test hook: clear the memoized schema so each case re-fetches. */
+export function resetSchemaCache(): void {
+  schemaCache = null;
+}
+
+async function getSchemaContext(): Promise<string> {
+  if (schemaCache !== null) return schemaCache;
+  try {
+    const res = await callMCP<Array<{ table_name: string; columns: Array<{ column_name: string }> }>>(
+      'list_tables'
+    );
+    schemaCache =
+      res.success && Array.isArray(res.data)
+        ? res.data
+            .map((t) => `${t.table_name}(${t.columns.map((c) => c.column_name).join(', ')})`)
+            .join('\n')
+        : '';
+  } catch {
+    schemaCache = '';
+  }
+  return schemaCache;
+}
+
 /**
- * Translate a Claude tool call into an MCP call. For semantic_search we embed
- * the natural-language query first. Returns the raw MCPResponse.
+ * Translate a tool call into an MCP call. For semantic_search we embed the
+ * natural-language query first. Returns the raw MCPResponse.
  */
 async function executeTool(tool: string, input: Record<string, unknown>) {
   if (tool === 'semantic_search') {
@@ -134,95 +182,82 @@ function simplifyInput(tool: string, input: Record<string, unknown>): Record<str
   return input;
 }
 
-function textOf(msg: Anthropic.Message): string {
-  return msg.content
-    .filter((b): b is Anthropic.TextBlock => b.type === 'text')
-    .map((b) => b.text)
-    .join('\n')
-    .trim();
+/** Safely parse a tool-call arguments JSON string into an object. */
+function parseArgs(raw: string | undefined): Record<string, unknown> {
+  if (!raw) return {};
+  try {
+    return JSON.parse(raw) as Record<string, unknown>;
+  } catch {
+    return {};
+  }
 }
 
 export async function runAgent(task: string): Promise<AgentResult> {
+  assertChatConfigured();
   const ctx: AgentContext = { task, history: [], toolsUsed: [], startTime: Date.now() };
-  const anthropic = lazyAnthropic();
 
-  // 1-3. RAG pre-fetch: embed the task and pull doc context (best-effort).
-  let docContext = '';
-  let docsUsed = 0;
-  try {
-    const embedding = await embedText(task);
-    const res = await callMCP<Array<{ title: string; content: string }>>('semantic_search', {
-      query_embedding: embedding,
-      match_count: DOC_MATCH_COUNT,
-    });
-    if (res.success && Array.isArray(res.data)) {
-      docsUsed = res.data.length;
-      docContext = res.data.map((d) => `- ${d.title}: ${d.content}`).join('\n');
-    }
-  } catch {
-    // OpenAI/MCP unavailable — proceed without doc context.
-  }
-
-  // 4. Ask Claude which tool to use.
-  const messages: Anthropic.MessageParam[] = [{ role: 'user', content: task }];
-  const first = await anthropic.messages.create({
+  // Route first; semantic_search only fires if the model picks it. Ground the
+  // model in the real schema so it writes correct column names, not guesses.
+  const schema = await getSchemaContext();
+  const messages: OpenAI.Chat.Completions.ChatCompletionMessageParam[] = [
+    { role: 'system', content: systemPrompt(schema) },
+    { role: 'user', content: task },
+  ];
+  const first = await llm.chat.completions.create({
     model: AGENT_MODEL,
     max_tokens: MAX_TOKENS,
-    system: systemPrompt(docContext),
-    tools: CLAUDE_TOOLS,
+    tools: TOOLS,
     messages,
   });
 
-  // 5. Parse tool use.
-  const toolUse = first.content.find(
-    (b): b is Anthropic.ToolUseBlock => b.type === 'tool_use'
-  );
+  const firstMsg = first.choices[0].message;
+  const toolCall = firstMsg.tool_calls?.[0];
 
-  if (!toolUse) {
+  if (!toolCall) {
     // No tool — typically a refusal (safety) or a directly-answerable question.
     return {
       task,
       toolCalled: null,
       toolInput: {},
       toolOutput: null,
-      finalAnswer: textOf(first) || '(no answer)',
+      finalAnswer: firstMsg.content?.trim() || '(no answer)',
       latency_ms: Date.now() - ctx.startTime,
-      docsUsed,
+      docChunks: [],
     };
   }
 
-  const toolName = toolUse.name;
-  const toolInput = toolUse.input as Record<string, unknown>;
+  const toolName = toolCall.function.name;
+  const toolInput = parseArgs(toolCall.function.arguments);
   ctx.toolsUsed.push(toolName);
 
-  // 6. Execute the MCP tool, with one simplified retry on failure.
+  // Execute the MCP tool, with one simplified retry on failure.
   let mcpResult = await executeTool(toolName, toolInput);
   if (!mcpResult.success) {
     const retryInput = simplifyInput(toolName, toolInput);
     mcpResult = await executeTool(toolName, retryInput);
   }
 
-  // Final turn: feed the tool result back so Claude can answer in prose.
-  messages.push({ role: 'assistant', content: first.content });
+  // Retrieved chunks for the trace — only on the semantic_search path.
+  const docChunks: DocChunk[] =
+    toolName === 'semantic_search' && mcpResult.success && Array.isArray(mcpResult.data)
+      ? (mcpResult.data as DocChunk[])
+      : [];
+
+  // Final turn: feed the tool result back so the model can answer in prose. No
+  // tools here — the model must produce text, not emit another tool call (which
+  // would leave content null and yield "(no answer)").
+  messages.push(firstMsg);
   messages.push({
-    role: 'user',
-    content: [
-      {
-        type: 'tool_result',
-        tool_use_id: toolUse.id,
-        content: JSON.stringify(
-          mcpResult.success ? mcpResult.data : { error: mcpResult.error }
-        ).slice(0, 8000),
-        is_error: !mcpResult.success,
-      },
-    ],
+    role: 'tool',
+    tool_call_id: toolCall.id,
+    content: JSON.stringify(
+      mcpResult.success ? mcpResult.data : { error: mcpResult.error }
+    ).slice(0, 8000),
   });
 
-  const second = await anthropic.messages.create({
+  const second = await llm.chat.completions.create({
     model: AGENT_MODEL,
     max_tokens: MAX_TOKENS,
-    system: systemPrompt(docContext),
-    tools: CLAUDE_TOOLS,
     messages,
   });
 
@@ -231,9 +266,9 @@ export async function runAgent(task: string): Promise<AgentResult> {
     toolCalled: toolName,
     toolInput,
     toolOutput: mcpResult.success ? mcpResult.data : { error: mcpResult.error },
-    finalAnswer: textOf(second) || '(no answer)',
+    finalAnswer: second.choices[0].message.content?.trim() || '(no answer)',
     latency_ms: Date.now() - ctx.startTime,
-    docsUsed,
+    docChunks,
   };
 }
 

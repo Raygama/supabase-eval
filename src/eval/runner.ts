@@ -40,6 +40,10 @@ async function runOne(tc: TestCase): Promise<RowResult> {
     task: tc.task,
     expected_tool: tc.expectedTool,
     actual_tool_called: agent.toolCalled,
+    // Full execution trace — surfaced per-case in the dashboard.
+    tool_input: agent.toolInput,
+    tool_output: agent.toolOutput,
+    doc_chunks: agent.docChunks,
     agent_output: agent.finalAnswer,
     judge_score: judge.score,
     judge_reasoning: judge.reasoning,

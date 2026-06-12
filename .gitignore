@@ -11,3 +11,4 @@ dashboard/out/
 # Generated reports keep, but ignore os cruft
 .DS_Store
 *.log
+reports/

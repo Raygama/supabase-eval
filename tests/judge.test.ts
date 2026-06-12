@@ -1,20 +1,19 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
-/** Judge unit tests with a mocked Anthropic client. */
-
-process.env.ANTHROPIC_API_KEY = 'test-key';
+/** Judge unit tests with a mocked OpenRouter chat client. */
 
 const { mockCreate } = vi.hoisted(() => ({ mockCreate: vi.fn() }));
 
-vi.mock('@anthropic-ai/sdk', () => ({
-  default: class MockAnthropic {
-    messages = { create: mockCreate };
-  },
+vi.mock('../src/lib/llm', () => ({
+  llm: { chat: { completions: { create: mockCreate } } },
+  CHAT_MODEL: 'test-model',
+  assertChatConfigured: () => {},
 }));
 
 import { judgeResult } from '../src/eval/judge';
 
-const judgeMsg = (text: string) => ({ content: [{ type: 'text', text }] });
+// OpenAI-style chat-completion response.
+const judgeMsg = (text: string) => ({ choices: [{ message: { content: text } }] });
 
 beforeEach(() => mockCreate.mockReset());
 

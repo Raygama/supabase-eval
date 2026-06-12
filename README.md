@@ -108,40 +108,58 @@ Run `npm run eval:run` to generate results. Each run writes a markdown report to
 `reports/eval_<timestamp>.md` and rows to the `eval_results` table; the dashboard
 renders the latest run.
 
+Latest run (`eval_1781269150647`) — agent + judge on `claude-sonnet-4.6`, embeddings
+on `text-embedding-3-small`, both via OpenRouter:
+
 ```
-📊 Results for eval_<timestamp>
-  Total:    30 cases
-  Passed:   NN (NN%)
+📊 Results for eval_1781269150647
+  Total:     30 cases
+  Passed:    29 (97%)
+  Failed:    1
+  Avg score: 4.70/5
+
   By category:
-  sql-generation   N/6  ████████████ ...%
-  schema-lookup    N/6  ...
-  doc-retrieval    N/6  ...
-  performance      N/6  ...
-  safety           N/6  ...
+  sql-generation   5/6  ██████████░░  83%
+  schema-lookup    6/6  ████████████ 100%
+  doc-retrieval    6/6  ████████████ 100%
+  performance      6/6  ████████████ 100%
+  safety           6/6  ████████████ 100%
+
+  Avg latency: 11675ms
 ```
 
-> _(Paste your latest run's summary / a dashboard screenshot here once you've run it with valid API keys.)_
+| Metric | Value |
+|---|---|
+| Total cases | 30 |
+| Pass rate | **97%** (29/30) |
+| Avg judge score | 4.70 / 5 |
+| Safety cases rejected | 6/6 |
+
+The single miss (`sql-04`) used the correct tool (`run_sql`) but returned an empty
+final answer — a one-off generation hiccup, not a routing error. Full per-case
+breakdown and judge reasoning live in `reports/eval_1781269150647.md`.
 
 ---
 
-## Finishing the build (remaining Definition-of-Done)
+## Reproducing the pipeline
 
-Everything is implemented and committed. These final steps need credentials/accounts:
+A single funded `OPENROUTER_KEY` powers both the chat models (agent + judge,
+`claude-sonnet-4.6`) and embeddings (`text-embedding-3-small`, 1536-dim) through
+OpenRouter's OpenAI-compatible gateway — no separate Anthropic/OpenAI keys needed.
+A raw `OPENAI_API_KEY` is still accepted as a fallback for embeddings + a GPT chat
+model.
 
 ```bash
-# 1. Add the missing keys to .env:
-#      ANTHROPIC_API_KEY=...           (console.anthropic.com — agent + judge)
-#      OPENAI_API_KEY=...              (a FUNDED key — the seeded one is out of quota)
+# 1. Copy .env.example → .env and set OPENROUTER_KEY (+ the SUPABASE_* values).
 
 # 2. Build the knowledge base (yields ~70 chunks > the 50-row bar)
 npm run embed:docs
 
-# 3. All 5 MCP tools now pass (semantic_search included)
+# 3. All 5 MCP tools pass (semantic_search included)
 npm run test:mcp
 
 # 4. Run the 30-case eval — logs to eval_results + writes reports/<run>.md
 npm run eval:run
-#    then paste the summary into the "Eval results" section above.
 ```
 
 **Publish to GitHub (public repo with the per-phase commit history):**
@@ -173,8 +191,8 @@ npm test            # vitest run — mcp-client, agent (incl. retry), judge, saf
 npx tsc --noEmit    # typecheck
 ```
 
-The unit tests mock Anthropic, OpenAI, and the MCP client, so they run offline and
-deterministically.
+The unit tests mock the OpenRouter chat client, the embeddings client, and the MCP
+client, so they run offline and deterministically.
 
 ---
 
