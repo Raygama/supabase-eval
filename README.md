@@ -124,6 +124,48 @@ renders the latest run.
 
 ---
 
+## Finishing the build (remaining Definition-of-Done)
+
+Everything is implemented and committed. These final steps need credentials/accounts:
+
+```bash
+# 1. Add the missing keys to .env:
+#      ANTHROPIC_API_KEY=...           (console.anthropic.com — agent + judge)
+#      OPENAI_API_KEY=...              (a FUNDED key — the seeded one is out of quota)
+
+# 2. Build the knowledge base (yields ~70 chunks > the 50-row bar)
+npm run embed:docs
+
+# 3. All 5 MCP tools now pass (semantic_search included)
+npm run test:mcp
+
+# 4. Run the 30-case eval — logs to eval_results + writes reports/<run>.md
+npm run eval:run
+#    then paste the summary into the "Eval results" section above.
+```
+
+**Publish to GitHub (public repo with the per-phase commit history):**
+
+```bash
+gh auth login
+gh repo create supabase-eval --public --source . --remote origin --push
+# .env is gitignored, so secrets are not pushed.
+```
+
+**Deploy the dashboard to Vercel:**
+
+```bash
+cd dashboard
+npm i -g vercel && vercel link          # set Root Directory = dashboard
+vercel env add NEXT_PUBLIC_SUPABASE_URL
+vercel env add NEXT_PUBLIC_SUPABASE_ANON_KEY
+vercel --prod
+```
+
+> The MCP-server DB fix (hardened `execute_readonly_sql` + `list_tables_info`) is
+> already applied to the live project and version-controlled in
+> `supabase/migrations/`.
+
 ## Testing
 
 ```bash
