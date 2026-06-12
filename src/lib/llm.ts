@@ -17,13 +17,13 @@ const useOpenRouter = !!process.env.OPENROUTER_KEY;
 
 export const llm = useOpenRouter
   ? new OpenAI({
-      apiKey: process.env.OPENROUTER_KEY,
-      baseURL: 'https://openrouter.ai/api/v1',
-    })
+    apiKey: process.env.OPENROUTER_KEY,
+    baseURL: 'https://openrouter.ai/api/v1',
+  })
   : new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 
 /** Model used by both the agent and the judge. Cheap + capable for this workload. */
-export const CHAT_MODEL = useOpenRouter ? 'anthropic/claude-sonnet-4.6' : 'gpt-4o-mini';
+export const CHAT_MODEL = useOpenRouter ? 'anthropic/claude-4.6-sonnet' : 'gpt-4o-mini';
 
 /** Throw early with a clear message if no chat-capable key is configured. */
 export function assertChatConfigured(): void {
