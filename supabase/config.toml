@@ -1,0 +1,9 @@
+# Supabase CLI configuration.
+# project_id is the local project name used by the CLI, not the remote ref.
+project_id = "supabase-eval"
+
+[functions.mcp-server]
+verify_jwt = false
+
+[functions.hello-world]
+verify_jwt = false
