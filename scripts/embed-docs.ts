@@ -15,8 +15,12 @@ const DOC_SOURCES = [
   { url: 'https://raw.githubusercontent.com/supabase/supabase/master/apps/docs/content/guides/ai/vector-columns.mdx', title: 'Vector Columns' },
   { url: 'https://raw.githubusercontent.com/supabase/supabase/master/apps/docs/content/guides/ai/semantic-search.mdx', title: 'Semantic Search' },
   { url: 'https://raw.githubusercontent.com/supabase/supabase/master/apps/docs/content/guides/storage/quickstart.mdx', title: 'Storage Quickstart' },
-  { url: 'https://raw.githubusercontent.com/supabase/supabase/master/apps/docs/content/guides/realtime/quickstart.mdx', title: 'Realtime Quickstart' },
+  { url: 'https://raw.githubusercontent.com/supabase/supabase/master/apps/docs/content/guides/realtime/concepts.mdx', title: 'Realtime Concepts' },
+  { url: 'https://raw.githubusercontent.com/supabase/supabase/master/apps/docs/content/guides/realtime/postgres-changes.mdx', title: 'Realtime Postgres Changes' },
   { url: 'https://raw.githubusercontent.com/supabase/supabase/master/apps/docs/content/guides/database/postgres/row-level-security.mdx', title: 'Row Level Security' },
+  { url: 'https://raw.githubusercontent.com/supabase/supabase/master/apps/docs/content/guides/database/functions.mdx', title: 'Database Functions' },
+  { url: 'https://raw.githubusercontent.com/supabase/supabase/master/apps/docs/content/guides/ai/vector-indexes/hnsw-indexes.mdx', title: 'HNSW Indexes' },
+  { url: 'https://raw.githubusercontent.com/supabase/supabase/master/apps/docs/content/guides/auth/social-login.mdx', title: 'Auth Social Login' },
 ];
 
 /**
@@ -63,7 +67,7 @@ const FALLBACK_DOCS = [
 ];
 
 // Split text into ~500 token chunks with 50 token overlap (rough char heuristic).
-function chunkText(text: string, chunkSize = 1800, overlap = 200): string[] {
+function chunkText(text: string, chunkSize = 1200, overlap = 150): string[] {
   const chunks: string[] = [];
   let start = 0;
   while (start < text.length) {
