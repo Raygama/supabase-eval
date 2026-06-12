@@ -1,0 +1,29 @@
+{
+  "name": "supabase-eval",
+  "version": "1.0.0",
+  "description": "AI developer tool: an agent that interacts with Supabase through a custom HTTP MCP server, a pgvector knowledge base, and an LLM-judged eval framework.",
+  "type": "module",
+  "private": true,
+  "scripts": {
+    "seed:order-items": "tsx scripts/seed-order-items.ts",
+    "test:mcp": "tsx scripts/test-mcp.ts",
+    "embed:docs": "tsx scripts/embed-docs.ts",
+    "agent": "tsx src/agent/index.ts",
+    "eval:run": "tsx src/eval/runner.ts",
+    "eval:report": "tsx src/eval/report.ts",
+    "test": "vitest run",
+    "test:watch": "vitest"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.32.1",
+    "@supabase/supabase-js": "^2.45.4",
+    "openai": "^4.67.3"
+  },
+  "devDependencies": {
+    "@types/node": "^22.7.5",
+    "dotenv": "^16.4.5",
+    "tsx": "^4.19.1",
+    "typescript": "^5.6.3",
+    "vitest": "^2.1.3"
+  }
+}

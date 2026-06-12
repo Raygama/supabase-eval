@@ -1,0 +1,13 @@
+node_modules/
+.env
+dist/
+.supabase/
+
+# Next.js dashboard
+dashboard/.next/
+dashboard/node_modules/
+dashboard/out/
+
+# Generated reports keep, but ignore os cruft
+.DS_Store
+*.log
