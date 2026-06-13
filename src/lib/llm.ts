@@ -23,7 +23,7 @@ export const llm = useOpenRouter
   : new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 
 /** Model used by both the agent and the judge. Cheap + capable for this workload. */
-export const CHAT_MODEL = useOpenRouter ? 'anthropic/claude-4.6-sonnet' : 'gpt-4o-mini';
+export const CHAT_MODEL = useOpenRouter ? 'anthropic/claude-4.6-sonnet' : 'gpt-5.5';
 
 /** Throw early with a clear message if no chat-capable key is configured. */
 export function assertChatConfigured(): void {

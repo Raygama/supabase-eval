@@ -11,4 +11,8 @@ dashboard/out/
 # Generated reports keep, but ignore os cruft
 .DS_Store
 *.log
-reports/
+
+# Ignore all generated eval reports...
+reports/*
+# ...except the canonical run referenced in the README
+!reports/eval_1781279527944.md

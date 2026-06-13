@@ -6,7 +6,7 @@ An AI database assistant agent that answers questions about a Supabase database 
 [![Supabase](https://img.shields.io/badge/Supabase-3ECF8E?style=flat-square&logo=supabase&logoColor=white)](https://supabase.com/)
 [![Vercel](https://img.shields.io/badge/Vercel-000000?style=flat-square&logo=vercel&logoColor=white)](https://vercel.com/)
 [![Vitest](https://img.shields.io/badge/Vitest-6E9F18?style=flat-square&logo=vitest&logoColor=white)](https://vitest.dev/)
-[![Model](https://img.shields.io/badge/Model-Claude%204.6%20Sonnet-D1A054?style=flat-square&logo=anthropic&logoColor=white)](https://anthropic.com/)
+[![Model](https://img.shields.io/badge/Model-Claude%204.6%20Sonnet%20(via%20OpenRouter)-D1A054?style=flat-square&logo=anthropic&logoColor=white)](https://openrouter.ai/)
 
 ---
 
@@ -14,11 +14,11 @@ An AI database assistant agent that answers questions about a Supabase database 
 
 ```mermaid
 flowchart LR
-    User([User / Eval Runner]) --> Agent["Agent Skill Layer<br/>(Claude 4.6 Sonnet)"]
-    Agent -- "embed task" --> OpenAI[(OpenAI<br/>text-embedding-3-small)]
+    User([User / Eval Runner]) --> Agent["Agent Skill Layer<br/>(Claude 4.6 Sonnet via OpenRouter)"]
+    Agent -- "embed task" --> OpenAI[(text-embedding-3-small<br/>via OpenRouter)]
     Agent -- "tool call (HTTP)" --> MCP["MCP Server<br/>(Supabase Edge Function / Deno)"]
     MCP -- "execute_readonly_sql / match_documents" --> DB[(Postgres + pgvector)]
-    Agent -. "scores" .-> Judge["LLM Judge<br/>(Claude 4.6 Sonnet)"]
+    Agent -. "scores" .-> Judge["LLM Judge<br/>(Claude 4.6 Sonnet via OpenRouter)"]
     Judge --> Results[(eval_results)]
     Results --> Dashboard["Next.js Dashboard<br/>(Vercel)"]
 ```
@@ -39,7 +39,7 @@ flowchart LR
 | Component | Purpose & Product Thinking |
 | :--- | :--- |
 | **HTTP MCP Server** (Edge Function) | Exposes database tools over HTTP. This decouples tools from a local process so they are callable from the agent, the eval runner, or any web UI. |
-| **`execute_readonly_sql` Function** | Safety is enforced at the database level. SELECT-only execution is validated in both the Edge Function and the DB function, preventing unauthorized data mutation. |
+| **`execute_readonly_sql` Function** | Safety is enforced at the database level: the DB function sets `transaction_read_only = on` so Postgres itself rejects any write — a hard capability boundary, not just statement-shape checks. Layered on top are keyword guards + a subquery wrapper in both the Edge Function and the DB function for fast, friendly rejections. |
 | **pgvector Knowledge Base** | Employs vector search over Supabase documentation, enabling the agent to answer conceptual "how-to" questions in addition to running SQL queries. |
 | **Agent Skill Layer** | The orchestrator: maps natural-language prompts to the correct tool calls, injects retrieved docs, and handles dependency failures gracefully. |
 | **LLM-as-Judge** | Uses a rubric-driven Claude judge to grade accuracy, hallucinations, and safety compliance. This approach handles nuances that rigid regex/string checks miss. |
@@ -54,7 +54,7 @@ supabase-eval/
 ├── supabase/functions/mcp-server/   # Deployed Edge Function MCP server (Deno)
 ├── scripts/                         # Database seeding, document embedding, and testing scripts
 ├── src/
-│   ├── lib/                         # Supabase, OpenAI, MCP client, and SQL safety libraries
+│   ├── lib/                         # Supabase, OpenRouter (chat + embeddings), MCP client, and SQL safety libraries
 │   ├── agent/                       # Agent orchestration layer (runAgent)
 │   └── eval/                        # Test cases, LLM judge, and runner pipeline
 ├── tests/                           # Vitest unit test suite (offline/deterministic mocks)
@@ -83,8 +83,8 @@ cp .env.example .env
 
 Open `.env` and fill in:
 * `SUPABASE_SERVICE_ROLE_KEY` and `SUPABASE_ANON_KEY` (from Supabase Dashboard → Settings → API)
-* `OPENAI_API_KEY` (for doc embedding & task vectorization)
-* `ANTHROPIC_API_KEY` (for agent and judge models)
+* `OPENROUTER_KEY` (single key — powers the Claude 4.6 Sonnet agent + judge **and** `text-embedding-3-small` embeddings through OpenRouter's OpenAI-compatible gateway)
+* `OPENAI_API_KEY` (optional — direct-OpenAI fallback if `OPENROUTER_KEY` is unset; covers embeddings + a `gpt-5.5` agent/judge)
 
 ### 2. Seeding & Execution
 
@@ -98,7 +98,7 @@ Seed the mock `order_items` table:
 npm run seed:order-items
 ```
 
-Build the pgvector knowledge base (~$0.02 of OpenAI embeddings):
+Build the pgvector knowledge base (~$0.02 of embeddings via OpenRouter):
 ```bash
 npm run embed:docs
 ```
@@ -131,8 +131,8 @@ npm run dev
 | `SUPABASE_URL` | Dashboard → Settings → API | scripts, agent, eval |
 | `SUPABASE_SERVICE_ROLE_KEY` | Dashboard → Settings → API | scripts, agent, eval (secret) |
 | `SUPABASE_ANON_KEY` | Dashboard → Settings → API | dashboard |
-| `OPENAI_API_KEY` | platform.openai.com | embed-docs + agent query embeddings |
-| `ANTHROPIC_API_KEY` | console.anthropic.com | agent + judge (`claude-4.6-sonnet`) |
+| `OPENROUTER_KEY` | openrouter.ai/keys | agent + judge (`anthropic/claude-4.6-sonnet`) **and** embeddings (`openai/text-embedding-3-small`) — single key, preferred |
+| `OPENAI_API_KEY` | platform.openai.com | optional direct-OpenAI fallback used only when `OPENROUTER_KEY` is unset (embeddings + a `gpt-5.5` agent/judge) |
 | `MCP_SERVER_URL` | Deployed Edge Function URL | mcp-client |
 
 ---
@@ -168,7 +168,12 @@ The latest evaluation run achieved a **100% pass rate** using `claude-4.6-sonnet
 | **Pass Rate** | **100%** (30/30) |
 | **Avg Judge Score** | 4.93 / 5 |
 | **Avg Latency** | 8976 ms |
+| **MCP Tools Exercised** | 5/5 |
+| **SQL Safety Layers** | 2 (Edge Function + DB function) |
 | **Safety Rejections** | 6/6 (100% blocked) |
+
+> [!NOTE]
+> The ~8.9s avg latency is **LLM round-trip bound** — dominated by Claude 4.6 Sonnet generation (often 2 calls/case: tool selection + answer synthesis) plus the OpenRouter hop, not the MCP tooling or Postgres queries (single-digit ms). It tracks model/network time, not pipeline overhead.
 
 #### Dashboard Preview
 ![Agent Evaluation Telemetry Dashboard](assets/dashboard-telemetry.jpg)
@@ -217,7 +222,7 @@ Unit tests use mock API responses for both chat models, embeddings, and the MCP 
 
 ## 💡 Key Learnings & Future Work
 
-* **Two-Layer Safety is Crucial**: Implementing query validation checks in both the HTTP Edge Function and the Postgres database level (`execute_readonly_sql`) prevents bypasses (e.g., executing `EXPLAIN ANALYZE INSERT...` which is blocked by the DB but might bypass basic string matching).
+* **Defense in Depth, Anchored by a Capability Boundary**: The query path layers three checks. Keyword guards in the HTTP Edge Function and the Postgres function reject obvious mutations fast and with clear messages; the `SELECT ... FROM (<sql>) t` subquery wrapper rejects writable CTEs (Postgres only permits data-modifying `WITH` at top level). But string/shape checks can't reason about every construct, so the *airtight* layer is `SET LOCAL transaction_read_only = on` inside `execute_readonly_sql` — Postgres itself then rejects any write (`INSERT`/`UPDATE`/DDL, writable CTEs, `EXPLAIN ANALYZE INSERT...`) with `cannot execute ... in a read-only transaction`, regardless of phrasing. The lesson: keyword filters are good UX, but the real guarantee has to come from a capability the caller cannot phrase its way around.
 * **Clear Interface Boundaries**: Separating how the LLM interacts with tools from the actual transport payloads (e.g. keeping Claude's `semantic_search` simple with text queries and having the agent handle vectorization internally) simplifies prompting and boosts accuracy.
 * **Rubric-Driven Evals**: Using a strict, detailed grading rubric for the LLM judge is necessary. Generic prompts result in drift across evaluation runs, whereas explicit rubrics yield reproducible, high-confidence results.
 * **Graceful Degradation**: Ensuring the agent falls back to pure database context if vector storage is offline prevents single-point-of-failure blockages during automated test runs.
